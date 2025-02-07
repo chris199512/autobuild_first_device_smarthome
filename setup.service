@@ -1,0 +1,10 @@
+[Unit]
+Description=Script for one-time initialization of Raspberry Pi OS, Docker and Ansible
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+ExecStart=/bin/bash /usr/local/sbin/setup.sh
+
+[Install]
+WantedBy=multi-user.target
