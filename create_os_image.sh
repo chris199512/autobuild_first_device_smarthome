@@ -46,7 +46,6 @@ echo 'XKBLAYOUT="de"' > "$ROOT_PARTITION/etc/default/keyboard"
 echo "$HOSTNAME" > "$ROOT_PARTITION/etc/hostname"
 echo "127.0.1.1   $HOSTNAME" >> "$ROOT_PARTITION/etc/hosts"
 
-# shellcheck disable=SC2154
 # Add user admin-local with password
 chroot "$ROOT_PARTITION" /usr/bin/qemu-aarch64-static /bin/bash <<EOF
 locale-gen de_DE.UTF-8
