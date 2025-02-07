@@ -1,0 +1,103 @@
+name: Create and Upload Raspberry Pi Image for USB-Stick to Nextcloud
+
+on: 
+  push:
+    paths:
+      - '**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Import GPG key
+      env:
+        GPG_PRIVATE_KEY1: ${{ secrets.GPG_PRIVATE_KEY }}
+        GPG_PASSPHRASE1: ${{ secrets.GPG_PASSPHRASE }}
+      run: |
+        echo "$GPG_PRIVATE_KEY1" | gpg --batch --import
+
+    - name: Decrypt files
+      env:
+        GPG_PASSPHRASE1: ${{ secrets.GPG_PASSPHRASE }}
+      run: |
+        find -name '*.gpg' | while read -r file; do
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE1" -o "${file%.gpg}" -d "$file"
+        done
+   
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget unzip xz-utils mount curl shellcheck kpartx qemu-user-static parted e2fsprogs dos2unix
+
+    - name: Convert line endings
+      run: |
+        find -name '*.sh' -exec dos2unix {} +
+
+    - name: Run Shellcheck
+      run: |
+        find -name '*.sh' -exec shellcheck {} +
+
+    - name: Check for required files
+      run: |
+        REQUIRED_FILES=("create_os_image.sh")
+        for file in "${REQUIRED_FILES[@]}"; do
+          if [[ ! -f "$file" ]]; then
+            echo "Error: File $file does not exist."
+            exit 1
+          fi
+        done
+
+    - name: Create Raspberry Pi Image in Docker
+      run: |
+        docker run --privileged --rm \
+          -v ${{ github.workspace }}:/workspace \
+          -e DEBIAN_FRONTEND=noninteractive \
+          ubuntu:latest /bin/bash -c "
+            apt-get update && apt-get install -y wget unzip xz-utils mount curl qemu-utils kpartx qemu-user-static parted e2fsprogs
+            cd /workspace
+            chmod +x ./create_image_usb.sh
+            ./create_image_usb.sh
+          "
+    - name: Upload Image to Nextcloud via WebDAV, fallback to SFTP if failed
+      env:
+        NEXTCLOUD_USERNAME: ${{ secrets.NEXTCLOUD_USER }}
+        NEXTCLOUD_PASSWORD: ${{ secrets.NEXTCLOUD_PW }}
+        NEXTCLOUD_URL: ${{ secrets.NEXTCLOUD_URL }}
+        SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+        SFTP_HOST: ${{ secrets.SFTP_HOST }}
+        SFTP_PORT: ${{ secrets.SFTP_PORT }}
+        SFTP_PRIVATE_KEY: ${{ secrets.SFTP_PRIVATE_KEY }}
+      run: |
+        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+        FILENAME="First_boot_usb_$TIMESTAMP.img"
+        mv first_boot_usb.img $FILENAME
+        
+        # Attempt WebDAV upload first
+        if ! curl --fail -u "$NEXTCLOUD_USERNAME:$NEXTCLOUD_PASSWORD" \
+          -T $FILENAME "$NEXTCLOUD_URL/remote.php/webdav/Shared/$FILENAME"; then
+          echo "WebDAV upload failed. Attempting SFTP upload..."
+          
+          # Prepare SSH private key for SFTP upload
+          echo "$SFTP_PRIVATE_KEY" > id_rsa
+          chmod 600 id_rsa
+
+          # Perform SFTP upload as fallback
+          sftp -i id_rsa -o StrictHostKeyChecking=no -P $SFTP_PORT $SFTP_USERNAME@$SFTP_HOST <<EOF
+          put $FILENAME /path/to/nextcloud/data/Shared/$FILENAME
+          bye
+        EOF
+
+          # Verify file exists on SFTP server (optional)
+          if [ $? -ne 0 ]; then
+            echo "SFTP upload also failed. Exiting..."
+            exit 1
+          else
+            echo "SFTP upload successful."
+          fi
+        else
+          echo "WebDAV upload successful."
+        fi
